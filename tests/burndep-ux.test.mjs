@@ -1597,9 +1597,18 @@ async function atRburnSigned() {
     if (s === 'present') return { ok: true, status: 200, json: async () => ({ txid: m[1], status: { confirmed: false } }) };
     return world.fetchImpl(url, opts);
   };
-  const ux = makeUx({ ...world, fetchImpl }, makeMemStorage());
+  const store = makeMemStorage();
+  const ux = makeUx({ ...world, fetchImpl }, store);
   const r = await ux.startReflected({ note: { txid: NOTE_TXID, vout: NOTE_VOUT, sats: NOTE_SATS, amount: NOTE_AMOUNT, blinding: NOTE_BLINDING }, walletPriv: WALLET_PRIV, feeRate: BASE_RATE });
-  return { ux, r, seen, world, commit: stripHex(r.burn.commitTxid).toLowerCase(), reveal: stripHex(r.burn.txid).toLowerCase() };
+  return { ux, r, seen, world, store, commit: stripHex(r.burn.commitTxid).toLowerCase(), reveal: stripHex(r.burn.txid).toLowerCase() };
+}
+{
+  const { ux, r, seen, world, store, commit, reveal } = await atRburnSigned();
+  seen.set(commit, 'present'); seen.set(reveal, 'absent');
+  world.chain.broadcastWithRetry = async () => { throw new Error('sendrawtransaction RPC error: bad-txns-inputs-missingorspent'); };
+  ok(await ux.cancelSigned(r.walletPub, r.id) === null && ux.list(r.walletPub).length === 0, 'a commit Bitcoin has whose reveal can never go (its TAC coin was spent elsewhere) is given up, not stuck');
+  const left = Array.from(store._raw.entries()).filter(([k]) => k.includes('-left:'));
+  ok(left.length === 1 && left[0][1].includes(r.burn.hex), 'the given-up bridge keeps its signed transactions on the side, so the commit output can still be swept');
 }
 {
   const { ux, r, seen, world, commit, reveal } = await atRburnSigned();
@@ -1609,7 +1618,7 @@ async function atRburnSigned() {
   ok(/could not be asked/.test(await refusal() || '') && ux.list(r.walletPub)[0]?.stage === 'rburn-signed', 'a chain that cannot be read keeps the bridge as it is');
   seen.set(commit, 'present');
   const send = world.chain.broadcastWithRetry;
-  world.chain.broadcastWithRetry = async () => { throw new Error('bad-txns-inputs-missingorspent'); };
+  world.chain.broadcastWithRetry = async () => { throw new Error('upstream timeout'); };
   ok(/first of its two.*refused the second/.test(await refusal() || '') && ux.list(r.walletPub)[0]?.stage === 'rburn-signed', 'a commit Bitcoin has, with a reveal it refuses, keeps the bridge and says why');
   world.chain.broadcastWithRetry = send;
   const sends = world.broadcasts.length;
